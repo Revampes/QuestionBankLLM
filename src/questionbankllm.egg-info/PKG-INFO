@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: questionbankllm
+Version: 0.1.0
+Summary: QuestionBankLLM - chemistry question parser and topic matcher
+Requires-Python: >=3.9
+Requires-Dist: Flask>=2.0

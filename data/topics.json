@@ -1,0 +1,174 @@
+[
+  {
+    "id": "T01",
+    "name": "Topic 1: Planet Earth",
+    "keywords": [
+      "planet earth",
+      "lithosphere",
+      "hydrosphere",
+      "atmosphere",
+      "rock cycle",
+      "ore",
+      "mineral"
+    ]
+  },
+  {
+    "id": "T02",
+    "name": "Topic 2: Microscopic World I",
+    "keywords": [
+      "atomic structure",
+      "isotope",
+      "relative atomic mass",
+      "ionic bond",
+      "metallic bond",
+      "covalent bond"
+    ]
+  },
+  {
+    "id": "T03",
+    "name": "Topic 3: Metals",
+    "keywords": [
+      "metal extraction",
+      "reactivity series",
+      "metal corrosion",
+      "alloy",
+      "blast furnace",
+      "electrometallurgy"
+    ]
+  },
+  {
+    "id": "T04",
+    "name": "Topic 4: Acids and Bases",
+    "keywords": [
+      "acid",
+      "base",
+      "alkali",
+      "ph",
+      "neutralisation",
+      "titration",
+      "indicator"
+    ]
+  },
+  {
+    "id": "T05",
+    "name": "Topic 5: Fossil Fuels and Carbon Compounds",
+    "keywords": [
+      "fossil fuel",
+      "petroleum",
+      "cracking",
+      "hydrocarbon",
+      "isomerism",
+      "polymer"
+    ]
+  },
+  {
+    "id": "T06",
+    "name": "Topic 6: Microscopic World II",
+    "keywords": [
+      "intermolecular force",
+      "van der waals",
+      "hydrogen bond",
+      "giant structure",
+      "molecular crystal"
+    ]
+  },
+  {
+    "id": "T07",
+    "name": "Topic 7: Redox Reactions, Chemical Cells and Electrolysis",
+    "keywords": [
+      "oxidation",
+      "reduction",
+      "oxidising agent",
+      "reducing agent",
+      "electrolysis",
+      "galvanic cell",
+      "electrochemical"
+    ]
+  },
+  {
+    "id": "T08",
+    "name": "Topic 8: Chemical Reactions and Energy",
+    "keywords": [
+      "enthalpy",
+      "exothermic",
+      "endothermic",
+      "hess",
+      "bond energy",
+      "calorimeter"
+    ]
+  },
+  {
+    "id": "T09",
+    "name": "Topic 9: Rate of Reaction",
+    "keywords": [
+      "rate of reaction",
+      "reaction rate",
+      "collision theory",
+      "kinetics",
+      "activation energy",
+      "catalyst",
+      "gas volume",
+      "molar volume",
+      "carbon dioxide",
+      "stoichiometric"
+    ]
+  },
+  {
+    "id": "T10",
+    "name": "Topic 10: Chemical Equilibrium",
+    "keywords": [
+      "chemical equilibrium",
+      "le chatelier",
+      "equilibrium constant",
+      "Kc",
+      "dynamic equilibrium"
+    ]
+  },
+  {
+    "id": "T11",
+    "name": "Topic 11: Chemistry of Carbon Compounds",
+    "keywords": [
+      "organic chemistry",
+      "functional group",
+      "homologous series",
+      "alkanol",
+      "alkanoic acid",
+      "ester"
+    ]
+  },
+  {
+    "id": "T12",
+    "name": "Topic 12: Patterns in the Chemical World",
+    "keywords": [
+      "periodic trend",
+      "periodicity",
+      "predicting properties",
+      "group trend",
+      "chemical pattern"
+    ]
+  },
+  {
+    "id": "E01",
+    "name": "Elective A: Industrial Chemistry",
+    "keywords": [
+      "industrial process",
+      "haber",
+      "contact process",
+      "ammonia",
+      "sulfuric acid",
+      "process control"
+    ]
+  },
+  {
+    "id": "E02",
+    "name": "Elective B: Materials Chemistry",
+    "keywords": [
+      "materials chemistry",
+      "composite",
+      "ceramic",
+      "polymer material",
+      "smart material",
+      "semiconductor"
+    ]
+  }
+]

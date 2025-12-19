@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>QuestionBankLLM — Analyzer</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:24px}
+    textarea{width:100%;height:220px}
+    .result{white-space:pre-wrap;background:#f7f7f7;padding:12px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <h2>Paste a chemistry question</h2>
+  {% if error %}
+    <div style="color:crimson">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/analyze">
+    <textarea name="question_text" placeholder="Paste question text here...">{% if request and request.form and request.form.question_text %}{{ request.form.question_text }}{% endif %}</textarea>
+    <div style="margin-top:8px">
+      <button type="submit">Analyze</button>
+    </div>
+  </form>
+
+  {% if result %}
+    <h3>Result</h3>
+    <div class="result">
+      Source: {{ result.source or 'Unknown' }}
+      \nYear: {{ result.year or 'Unknown' }}
+      \nQuestion #: {{ result.question_number or 'Unknown' }}
+      \nTopic: {{ result.topic_id }} - {{ result.topic_name }}
+      {% if result.question_type %}\nQuestion type: {{ result.question_type }}{% endif %}
+      {% if result.match_confidence is not none %}\nDataset similarity: {{ result.match_confidence }}{% if result.matched_dataset_id %} (ID: {{ result.matched_dataset_id }}){% endif %}{% endif %}
+      {% if result.correct_option %}\nDetected answer: {{ result.correct_option }}{% if result.correct_option_text %} ({{ result.correct_option_text }}){% endif %}{% endif %}
+      \n\nPrompt:\n{{ result.prompt }}
+      {% if result.answer_options %}\n\nOptions:\n{% for opt in result.answer_options %}  {{ opt.label }}. {{ opt.text }}\n{% endfor %}{% endif %}
+    </div>
+  {% endif %}
+
+  <p style="margin-top:18px;color:#666">Tip: include an answer in the pasted text using phrases like "Answer: C", "ans C", or just "C" on its own line.</p>
+</body>
+</html>
