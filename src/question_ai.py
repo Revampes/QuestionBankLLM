@@ -77,32 +77,43 @@ class ChemQuestionRecord:
 
 
 class TopicClassifier:
-    def __init__(self, topics_path: Optional[Path] = None) -> None:
+    def __init__(self, similarity_model: Optional['SimilarityModel'] = None, topics_path: Optional[Path] = None) -> None:
         base_dir = Path(__file__).resolve().parents[1]
         self.topics_path = topics_path or base_dir / "data" / "topics.json"
         self.topics = self._load_topics()
         self._topic_lookup = {topic["name"].lower(): topic for topic in self.topics}
+        self.similarity_model = similarity_model
 
     def _load_topics(self) -> List[Dict[str, str]]:
         with self.topics_path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
     def predict(self, text: str) -> Dict[str, str]:
-        text_lower = text.lower()
-        best_topic: Optional[Dict[str, str]] = None
-        best_score = 0
-        for topic in self.topics:
-            keywords = topic.get("keywords", [])
-            score = 0
-            for keyword in keywords:
-                if keyword and keyword in text_lower:
-                    score += 1
-            if score > best_score:
-                best_topic = topic
-                best_score = score
-        if best_topic is None:
-            best_topic = {"id": "UNKNOWN", "name": "Topic not found"}
-        return {"id": best_topic["id"], "name": best_topic["name"]}
+        # Strategy: Use k-NN from similarity model if available
+        if self.similarity_model:
+            neighbors = self.similarity_model.find_k_nearest(text, k=5)
+            if neighbors:
+                # Collect topics from neighbors
+                topic_counts = Counter()
+                for record, score in neighbors:
+                    # Weight by score? Or just count?
+                    # Let's weight by score to give better matches more influence
+                    topic_name = record.primary_topic
+                    # print(f"DEBUG: Neighbor {record.record_id} ({score:.3f}) - Topic: {topic_name}")
+                    topic_counts[topic_name] += score
+                
+                if topic_counts:
+                    best_topic_name = topic_counts.most_common(1)[0][0]
+                    # Look up ID
+                    topic_entry = self.lookup_by_name(best_topic_name)
+                    if topic_entry:
+                        return {"id": topic_entry["id"], "name": topic_entry["name"]}
+                    else:
+                        # print(f"DEBUG: Topic '{best_topic_name}' not found in lookup.")
+                        return {"id": "UNKNOWN", "name": best_topic_name}
+
+        # Fallback: Return Unknown (User requested to stop using keywords)
+        return {"id": "UNKNOWN", "name": "Topic not found"}
 
     def lookup_by_name(self, topic_name: str) -> Optional[Dict[str, str]]:
         return self._topic_lookup.get(topic_name.lower())
@@ -226,28 +237,80 @@ class SimilarityModel:
             return None
         return best_record, best_score
 
+    def find_k_nearest(self, text: str, k: int = 3) -> List[Tuple[ChemQuestionRecord, float]]:
+        if not text.strip():
+            return []
+        query_counts, query_norm = self._vectorize(text)
+        if not query_counts:
+            return []
+        candidates: List[Tuple[ChemQuestionRecord, float]] = []
+        for record, (counts, norm) in self.vector_cache:
+            overlap = set(query_counts.keys()) & set(counts.keys())
+            if not overlap:
+                continue
+            numerator = sum(query_counts[token] * counts[token] for token in overlap)
+            denominator = query_norm * norm
+            if denominator == 0:
+                continue
+            similarity = numerator / denominator
+            candidates.append((record, similarity))
+        
+        # Sort by score descending and take top k
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[:k]
+
 
 class QuestionAnalyzer:
     def __init__(self, refresh_dataset: bool = False) -> None:
-        self.topic_classifier = TopicClassifier()
         self.dataset = ChemQuestionDataset()
         self.dataset.refresh(force=refresh_dataset)
         records = self.dataset.load()
         self.similarity_model = SimilarityModel(records)
-        self.match_threshold = 0.65
+        self.topic_classifier = TopicClassifier(similarity_model=self.similarity_model)
+        self.match_threshold = 0.90
 
     def analyze(self, raw_text: str) -> ParsedQuestion:
         parsed = parse_question(raw_text, classifier=self.topic_classifier)
         match = self.similarity_model.find_best_match(parsed.combined_text())
+        
         if match:
             record, score = match
             parsed.match_confidence = round(score, 3)
-            if score >= self.match_threshold:
+            
+            # Duplicate detection logic
+            is_duplicate = False
+            
+            # Check metadata if available
+            input_meta_present = parsed.year is not None and parsed.question_number is not None
+            record_meta_present = record.year is not None and record.question_number is not None
+            
+            if input_meta_present and record_meta_present:
+                # If metadata is present, it must match exactly to be a duplicate
+                # unless the score is extremely high (implying metadata error in one)
+                meta_match = (str(parsed.year) == str(record.year)) and \
+                             (str(parsed.question_number).lower() == str(record.question_number).lower())
+                
+                if meta_match:
+                    # Metadata matches, allow a slightly lower threshold for content variation
+                    if score >= 0.75:
+                        is_duplicate = True
+                else:
+                    # Metadata mismatch
+                    # Only consider duplicate if content is practically identical (ignoring metadata typo)
+                    if score >= 0.98:
+                        is_duplicate = True
+            else:
+                # Metadata missing in one or both, rely on strict threshold
+                if score >= self.match_threshold:
+                    is_duplicate = True
+
+            if is_duplicate:
                 parsed.matched_dataset_id = record.record_id
                 parsed.question_type = record.question_type
                 parsed.correct_option = record.correct_option
                 parsed.correct_option_text = self._option_text(record)
                 parsed.structured_answer = record.structural_answer
+                # If we found a duplicate, we can trust its topic more
                 dataset_topic_name = record.primary_topic
                 topic_entry = self.topic_classifier.lookup_by_name(dataset_topic_name)
                 if topic_entry:
@@ -255,6 +318,7 @@ class QuestionAnalyzer:
                     parsed.topic_name = topic_entry["name"]
                 else:
                     parsed.topic_name = dataset_topic_name
+        
         return parsed
 
     @staticmethod
