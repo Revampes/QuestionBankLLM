@@ -12,8 +12,14 @@ def _format_result(result: ParsedQuestion) -> str:
         f"Source: {result.source or 'Unknown'}",
         f"Year: {result.year or 'Unknown'}",
         f"Question #: {result.question_number or 'Unknown'}",
-        f"Topic: {result.topic_id} - {result.topic_name}",
+        f"Primary topic: {result.topic_id} - {result.topic_name}",
     ]
+    if result.topic_matches:
+        lines.append("Topic matches:")
+        for match in result.topic_matches:
+            lines.append(
+                f"  - {match.id} - {match.name} (confidence {match.confidence:.2f})"
+            )
     if result.question_type:
         lines.append(f"Question type: {result.question_type}")
     if result.match_confidence is not None:

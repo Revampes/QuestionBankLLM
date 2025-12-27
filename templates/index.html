@@ -8,6 +8,12 @@
     body{font-family:Arial,Helvetica,sans-serif;margin:24px}
     textarea{width:100%;height:220px}
     .result{white-space:pre-wrap;background:#f7f7f7;padding:12px;border-radius:6px}
+    .notes-panel{margin-top:32px;padding:16px;border:1px solid #e1e1e1;border-radius:10px;background:#fffdf5}
+    .notes-panel textarea{width:100%;height:160px;margin-top:8px}
+    .notes-panel select{width:100%;padding:6px;margin-top:8px}
+    .notes-actions{display:flex;align-items:center;gap:12px;margin-top:10px}
+    #topicNoteStatus{font-size:.9em;color:#555}
+    button{cursor:pointer}
   </style>
 </head>
 <body>
@@ -28,7 +34,13 @@
       Source: {{ result.source or 'Unknown' }}
       \nYear: {{ result.year or 'Unknown' }}
       \nQuestion #: {{ result.question_number or 'Unknown' }}
-      \nTopic: {{ result.topic_id }} - {{ result.topic_name }}
+      \nPrimary topic: {{ result.topic_id }} - {{ result.topic_name }}
+      {% if result.topic_matches %}
+        \nTopic matches:
+        {% for match in result.topic_matches %}
+          \n  - {{ match.id }} - {{ match.name }} (confidence {{ '%.2f'|format(match.confidence) }})
+        {% endfor %}
+      {% endif %}
       {% if result.question_type %}\nQuestion type: {{ result.question_type }}{% endif %}
       {% if result.match_confidence is not none %}\nDataset similarity: {{ result.match_confidence }}{% if result.matched_dataset_id %} (ID: {{ result.matched_dataset_id }}){% endif %}{% endif %}
       {% if result.correct_option %}\nDetected answer: {{ result.correct_option }}{% if result.correct_option_text %} ({{ result.correct_option_text }}){% endif %}{% endif %}
@@ -38,5 +50,64 @@
   {% endif %}
 
   <p style="margin-top:18px;color:#666">Tip: include an answer in the pasted text using phrases like "Answer: C", "ans C", or just "C" on its own line.</p>
+
+  <section class="notes-panel">
+    <h3>Topic notes (improve identification)</h3>
+    <p style="color:#555;margin-top:0">Select a topic and store rich notes or mnemonics. The analyzer treats your notes as extra training data.</p>
+    <label for="topicSelect">Topic</label>
+    <select id="topicSelect">
+      <option value="">Select a topic…</option>
+      {% for topic in topics or [] %}
+        <option value="{{ topic.id }}">{{ topic.name }}</option>
+      {% endfor %}
+    </select>
+    <textarea id="topicNoteInput" placeholder="Paste or type your notes here. Leave empty and save to clear the entry."></textarea>
+    <div class="notes-actions">
+      <button type="button" id="saveTopicNote">Save topic note</button>
+      <span id="topicNoteStatus"></span>
+    </div>
+  </section>
+
+  <script>
+    const topicNotes = {{ (topic_notes or {})|tojson }};
+    const topicSelect = document.getElementById('topicSelect');
+    const topicNoteInput = document.getElementById('topicNoteInput');
+    const topicNoteStatus = document.getElementById('topicNoteStatus');
+    const saveButton = document.getElementById('saveTopicNote');
+
+    function syncNoteField() {
+      const topicId = topicSelect.value;
+      topicNoteInput.value = topicId && topicNotes[topicId] ? topicNotes[topicId] : '';
+      topicNoteStatus.textContent = '';
+    }
+
+    async function saveTopicNote() {
+      const topicId = topicSelect.value;
+      if (!topicId) {
+        topicNoteStatus.textContent = 'Pick a topic first.';
+        return;
+      }
+      topicNoteStatus.textContent = 'Saving…';
+      try {
+        const response = await fetch('/topic-notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic_id: topicId, note: topicNoteInput.value })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Unable to save note.');
+        }
+        Object.assign(topicNotes, payload.notes || {});
+        syncNoteField();
+        topicNoteStatus.textContent = 'Saved!';
+      } catch (error) {
+        topicNoteStatus.textContent = error.message;
+      }
+    }
+
+    topicSelect.addEventListener('change', syncNoteField);
+    saveButton.addEventListener('click', saveTopicNote);
+  </script>
 </body>
 </html>

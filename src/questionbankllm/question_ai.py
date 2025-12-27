@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -22,6 +22,13 @@ class AnswerOption:
 
 
 @dataclass
+class TopicMatch:
+    id: str
+    name: str
+    confidence: float
+
+
+@dataclass
 class ParsedQuestion:
     source: Optional[str]
     year: Optional[int]
@@ -31,6 +38,7 @@ class ParsedQuestion:
     answer_options: List[AnswerOption]
     topic_id: str
     topic_name: str
+    topic_matches: List[TopicMatch] = field(default_factory=list)
     question_type: Optional[str] = None
     correct_option: Optional[str] = None
     correct_option_text: Optional[str] = None
@@ -74,38 +82,123 @@ class ChemQuestionRecord:
             return self.topics[0]
         return self.topic
 
+    @property
+    def is_topic_note(self) -> bool:
+        return self.question_type == "topic_note" or self.record_id.startswith("topic_note::")
+
 
 class TopicClassifier:
-    def __init__(self, topics_path: Optional[Path] = None) -> None:
-        # package is installed under src/, repo root is two parents up
+    def __init__(
+        self,
+        similarity_model: Optional['SimilarityModel'] = None,
+        topics_path: Optional[Path] = None,
+    ) -> None:
         base_dir = Path(__file__).resolve().parents[2]
         self.topics_path = topics_path or base_dir / "data" / "topics.json"
         self.topics = self._load_topics()
         self._topic_lookup = {topic["name"].lower(): topic for topic in self.topics}
+        self.similarity_model = similarity_model
 
     def _load_topics(self) -> List[Dict[str, str]]:
         with self.topics_path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
-    def predict(self, text: str) -> Dict[str, str]:
-        text_lower = text.lower()
-        best_topic: Optional[Dict[str, str]] = None
-        best_score = 0
+    def predict(self, text: str, max_topics: int = 3) -> List[TopicMatch]:
+        if not text.strip():
+            return [self._unknown_topic()]
+        predictions: List[TopicMatch] = []
+        if self.similarity_model:
+            predictions = self._predict_with_similarity(text, max_topics)
+        if not predictions:
+            predictions = self._predict_with_keywords(text, max_topics)
+        return predictions or [self._unknown_topic()]
+
+    def _predict_with_similarity(self, text: str, max_topics: int) -> List[TopicMatch]:
+        if not self.similarity_model:
+            return []
+        neighbors = self.similarity_model.find_k_nearest(text, k=max(5, max_topics * 3))
+        if not neighbors:
+            return []
+        note_neighbors = [(record, score) for record, score in neighbors if record.is_topic_note]
+        ranked_neighbors = note_neighbors if note_neighbors else neighbors
+        topic_scores: Dict[str, Dict[str, float]] = {}
+        for record, score in ranked_neighbors:
+            if score <= 0:
+                continue
+            topic_names = record.topics or [record.primary_topic]
+            for topic_name in topic_names:
+                if not topic_name:
+                    continue
+                entry = self.lookup_by_name(topic_name)
+                topic_id = entry["id"] if entry else "UNKNOWN"
+                topic_display = entry["name"] if entry else topic_name
+                key = f"{topic_id}:{topic_display.lower()}"
+                bucket = topic_scores.setdefault(
+                    key,
+                    {"id": topic_id, "name": topic_display, "score": 0.0},
+                )
+                bucket["score"] += score
+        if not topic_scores:
+            return []
+        max_score = max(bucket["score"] for bucket in topic_scores.values()) or 1.0
+        sorted_buckets = sorted(topic_scores.values(), key=lambda item: item["score"], reverse=True)
+        matches: List[TopicMatch] = []
+        for bucket in sorted_buckets[:max_topics]:
+            confidence = round(bucket["score"] / max_score, 3)
+            matches.append(TopicMatch(id=bucket["id"], name=bucket["name"], confidence=confidence))
+        return matches
+
+    def _predict_with_keywords(self, text: str, max_topics: int) -> List[TopicMatch]:
+        normalized = text.lower()
+        scored_topics: List[Tuple[Dict[str, str], int]] = []
         for topic in self.topics:
             keywords = topic.get("keywords", [])
-            score = 0
-            for keyword in keywords:
-                if keyword and keyword in text_lower:
-                    score += 1
-            if score > best_score:
-                best_topic = topic
-                best_score = score
-        if best_topic is None:
-            best_topic = {"id": "UNKNOWN", "name": "Topic not found"}
-        return {"id": best_topic["id"], "name": best_topic["name"]}
+            score = sum(1 for keyword in keywords if keyword and keyword.lower() in normalized)
+            if score:
+                scored_topics.append((topic, score))
+        if not scored_topics:
+            return []
+        scored_topics.sort(key=lambda item: item[1], reverse=True)
+        best_score = scored_topics[0][1] or 1
+        matches: List[TopicMatch] = []
+        for topic, score in scored_topics[:max_topics]:
+            confidence = round(score / best_score, 3)
+            matches.append(TopicMatch(id=topic["id"], name=topic["name"], confidence=confidence))
+        return matches
+
+    def build_topic_matches(
+        self,
+        topic_names: List[str],
+        confidence: float = 1.0,
+        max_topics: Optional[int] = None,
+    ) -> List[TopicMatch]:
+        matches: List[TopicMatch] = []
+        seen: set[Tuple[str, str]] = set()
+        for topic_name in topic_names:
+            if not topic_name:
+                continue
+            match = self._topic_match_from_name(topic_name, confidence)
+            key = (match.id, match.name.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(match)
+            if max_topics and len(matches) >= max_topics:
+                break
+        return matches or [self._unknown_topic()]
 
     def lookup_by_name(self, topic_name: str) -> Optional[Dict[str, str]]:
         return self._topic_lookup.get(topic_name.lower())
+
+    def _topic_match_from_name(self, topic_name: str, confidence: float) -> TopicMatch:
+        entry = self.lookup_by_name(topic_name)
+        if entry:
+            return TopicMatch(id=entry["id"], name=entry["name"], confidence=confidence)
+        normalized_name = topic_name.strip() or "Topic not found"
+        return TopicMatch(id="UNKNOWN", name=normalized_name, confidence=confidence)
+
+    def _unknown_topic(self) -> TopicMatch:
+        return TopicMatch(id="UNKNOWN", name="Topic not found", confidence=0.0)
 
 
 class ChemQuestionDataset:
@@ -186,6 +279,80 @@ class ChemQuestionDataset:
         return json.loads(payload)
 
 
+class TopicNotesStore:
+    def __init__(self, base_dir: Optional[Path] = None) -> None:
+        resolved_base = base_dir or Path(__file__).resolve().parents[2]
+        self.notes_path = resolved_base / "data" / "topic_notes.json"
+        self.topics_path = resolved_base / "data" / "topics.json"
+        self._topics_by_id = {topic["id"]: topic for topic in self._load_topics()}
+        self.notes = self._load_notes()
+
+    def _load_topics(self) -> List[Dict[str, str]]:
+        with self.topics_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def _load_notes(self) -> Dict[str, str]:
+        if not self.notes_path.exists():
+            return {}
+        with self.notes_path.open("r", encoding="utf-8") as handle:
+            try:
+                payload = json.load(handle)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"Invalid topic notes file: {error}") from error
+        if not isinstance(payload, dict):
+            return {}
+        return {str(key): str(value) for key, value in payload.items()}
+
+    def save(self) -> None:
+        self.notes_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.notes_path.open("w", encoding="utf-8") as handle:
+            json.dump(self.notes, handle, indent=2)
+
+    def set_note(self, topic_id: str, note_text: str) -> None:
+        topic_id = topic_id.strip()
+        if topic_id not in self._topics_by_id:
+            raise ValueError("Unknown topic id.")
+        normalized_text = (note_text or "").replace("\r\n", "\n")
+        if not normalized_text.strip():
+            self.notes.pop(topic_id, None)
+            return
+        self.notes[topic_id] = normalized_text
+
+    def get_notes(self) -> Dict[str, str]:
+        return dict(self.notes)
+
+    def topic_name(self, topic_id: str) -> str:
+        topic = self._topics_by_id.get(topic_id)
+        if topic:
+            return topic["name"]
+        return topic_id
+
+    def to_records(self) -> List[ChemQuestionRecord]:
+        records: List[ChemQuestionRecord] = []
+        for topic_id, text in self.notes.items():
+            cleaned = text.strip()
+            if not cleaned:
+                continue
+            topic_name = self.topic_name(topic_id)
+            record = ChemQuestionRecord(
+                record_id=f"topic_note::{topic_id}",
+                topic=topic_name,
+                question_type="topic_note",
+                source="Topic Note",
+                year=None,
+                paper=None,
+                question_number=None,
+                marks=None,
+                topics=[topic_name],
+                question_text=cleaned,
+                options=[],
+                correct_option=None,
+                structural_answer=None,
+            )
+            records.append(record)
+        return records
+
+
 class SimilarityModel:
     def __init__(self, records: List[ChemQuestionRecord]) -> None:
         self.records = records
@@ -226,14 +393,37 @@ class SimilarityModel:
             return None
         return best_record, best_score
 
+    def find_k_nearest(self, text: str, k: int = 3) -> List[Tuple[ChemQuestionRecord, float]]:
+        if not text.strip():
+            return []
+        query_counts, query_norm = self._vectorize(text)
+        if not query_counts:
+            return []
+        candidates: List[Tuple[ChemQuestionRecord, float]] = []
+        for record, (counts, norm) in self.vector_cache:
+            overlap = set(query_counts.keys()) & set(counts.keys())
+            if not overlap:
+                continue
+            numerator = sum(query_counts[token] * counts[token] for token in overlap)
+            denominator = query_norm * norm
+            if denominator == 0:
+                continue
+            similarity = numerator / denominator
+            candidates.append((record, similarity))
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        return candidates[:k]
+
 
 class QuestionAnalyzer:
     def __init__(self, refresh_dataset: bool = False) -> None:
-        self.topic_classifier = TopicClassifier()
+        self.base_dir = Path(__file__).resolve().parents[2]
         self.dataset = ChemQuestionDataset()
         self.dataset.refresh(force=refresh_dataset)
-        records = self.dataset.load()
-        self.similarity_model = SimilarityModel(records)
+        self.dataset.load()
+        self.topic_notes_store = TopicNotesStore(self.base_dir)
+        self.similarity_model = SimilarityModel([])
+        self.topic_classifier = TopicClassifier()
+        self._rebuild_models()
         self.match_threshold = 0.65
 
     def analyze(self, raw_text: str) -> ParsedQuestion:
@@ -242,20 +432,39 @@ class QuestionAnalyzer:
         if match:
             record, score = match
             parsed.match_confidence = round(score, 3)
+            if record.is_topic_note:
+                return parsed
             if score >= self.match_threshold:
                 parsed.matched_dataset_id = record.record_id
                 parsed.question_type = record.question_type
                 parsed.correct_option = record.correct_option
                 parsed.correct_option_text = self._option_text(record)
                 parsed.structured_answer = record.structural_answer
-                dataset_topic_name = record.primary_topic
-                topic_entry = self.topic_classifier.lookup_by_name(dataset_topic_name)
-                if topic_entry:
-                    parsed.topic_id = topic_entry["id"]
-                    parsed.topic_name = topic_entry["name"]
-                else:
-                    parsed.topic_name = dataset_topic_name
+                dataset_topics = self.topic_classifier.build_topic_matches(
+                    record.topics or [record.primary_topic]
+                )
+                parsed.topic_matches = dataset_topics
+                parsed.topic_id = dataset_topics[0].id
+                parsed.topic_name = dataset_topics[0].name
         return parsed
+
+    def get_topics(self) -> List[Dict[str, str]]:
+        return list(self.topic_classifier.topics)
+
+    def get_topic_notes(self) -> Dict[str, str]:
+        return self.topic_notes_store.get_notes()
+
+    def set_topic_note(self, topic_id: str, note: str) -> Dict[str, str]:
+        self.topic_notes_store.set_note(topic_id, note)
+        self.topic_notes_store.save()
+        self._rebuild_models()
+        return self.get_topic_notes()
+
+    def _rebuild_models(self) -> None:
+        combined_records = list(self.dataset.records)
+        combined_records.extend(self.topic_notes_store.to_records())
+        self.similarity_model = SimilarityModel(combined_records)
+        self.topic_classifier = TopicClassifier(similarity_model=self.similarity_model)
 
     @staticmethod
     def _option_text(record: ChemQuestionRecord) -> Optional[str]:
@@ -318,9 +527,10 @@ def parse_question(raw_text: str, classifier: Optional[TopicClassifier] = None) 
         metadata = {"source": None, "year": None, "question_number": None}
     prompt_and_options = _split_prompt_and_options(content_lines)
     prompt_text = "\n".join([line for line in prompt_and_options["prompt"] if line]).strip()
-    topic_info = classifier.predict(prompt_text)
+    topic_matches = classifier.predict(prompt_text, max_topics=3)
     # try to extract an explicit answer provided by the user in the raw text
     explicit_answer = _extract_answer_from_text(raw_text)
+    primary_topic = topic_matches[0]
     parsed = ParsedQuestion(
         source=metadata.get("source"),
         year=int(metadata["year"]) if metadata.get("year") else None,
@@ -328,8 +538,9 @@ def parse_question(raw_text: str, classifier: Optional[TopicClassifier] = None) 
         prompt=prompt_text,
         raw_prompt="\n".join(content_lines).strip(),
         answer_options=prompt_and_options["options"],
-        topic_id=topic_info["id"],
-        topic_name=topic_info["name"],
+        topic_id=primary_topic.id,
+        topic_name=primary_topic.name,
+        topic_matches=topic_matches,
     )
     if explicit_answer:
         parsed.correct_option = explicit_answer
@@ -376,7 +587,11 @@ D. 1200 cm3
     print("Source:", result.source or "Unknown")
     print("Year:", result.year or "Unknown")
     print("Question #:", result.question_number or "Unknown")
-    print("Detected topic:", f"{result.topic_id} - {result.topic_name}")
+    print("Primary topic:", f"{result.topic_id} - {result.topic_name}")
+    if result.topic_matches:
+        print("Topic matches:")
+        for match in result.topic_matches:
+            print(f"  {match.id} - {match.name} ({match.confidence:.2f})")
     if result.question_type:
         print("Question type:", result.question_type)
     if result.correct_option:
