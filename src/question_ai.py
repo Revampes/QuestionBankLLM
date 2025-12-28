@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import base64
 import json
 import math
 import re
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+try:  # Optional dependency: PyMuPDF
+    import fitz  # type: ignore
+except ImportError:  # pragma: no cover
+    fitz = None  # type: ignore
+
+try:  # Optional dependency: python-docx
+    from docx import Document  # type: ignore
+except ImportError:  # pragma: no cover
+    Document = None  # type: ignore
 
 
 GITHUB_TOPICS_API = "https://api.github.com/repos/Revampes/ChemQuestion/contents/topics"
@@ -45,6 +57,7 @@ class ParsedQuestion:
     structured_answer: Optional[str] = None
     match_confidence: Optional[float] = None
     matched_dataset_id: Optional[str] = None
+    images: List[str] = field(default_factory=list)
 
     def combined_text(self) -> str:
         lines: List[str] = [self.prompt]
@@ -416,6 +429,134 @@ class SimilarityModel:
         return candidates[:k]
 
 
+def _looks_like_question_start(text: str) -> bool:
+    if not text:
+        return False
+    patterns = [
+        r"^(?:q(?:uestion)?\s*)?(\d{1,3}[A-Za-z]?)\s*[:\.).\s]",
+        r"^\(?\s*(\d{1,3}[A-Za-z]?)\)",
+    ]
+    return any(re.match(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _segment_question_blocks(lines_with_page: List[Tuple[int, str]]) -> List[Dict[str, object]]:
+    blocks: List[Dict[str, object]] = []
+    current_lines: List[str] = []
+    current_pages: set[int] = set()
+    started = False
+    for page_number, line in lines_with_page:
+        stripped = line.strip()
+        if _looks_like_question_start(stripped):
+            if current_lines:
+                blocks.append({"lines": list(current_lines), "pages": sorted(current_pages)})
+                current_lines.clear()
+                current_pages.clear()
+            started = True
+        if not started:
+            continue
+        current_lines.append(line.rstrip("\n"))
+        if stripped:
+            current_pages.add(page_number)
+    if current_lines:
+        blocks.append({"lines": list(current_lines), "pages": sorted(current_pages)})
+    return blocks
+
+
+class FileQuestionExtractor:
+    def __init__(self, classifier: TopicClassifier) -> None:
+        self.classifier = classifier
+
+    def extract(self, file_path: Path) -> List[Dict[str, object]]:
+        extension = file_path.suffix.lower()
+        if extension == ".pdf":
+            self._ensure_pdf_support()
+            pages = self._extract_pdf(file_path)
+        elif extension in {".docx", ".doc"}:
+            self._ensure_docx_support()
+            pages = self._extract_docx(file_path)
+        else:
+            raise ValueError("Unsupported file type. Please upload a PDF or DOCX document.")
+
+        lines_with_page: List[Tuple[int, str]] = []
+        image_lookup: Dict[int, List[str]] = {}
+        for page in pages:
+            page_number = page.get("page", 0) or 0
+            image_lookup[page_number] = page.get("images", [])
+            page_text = (page.get("text") or "").replace("\r\n", "\n")
+            for line in page_text.split("\n"):
+                lines_with_page.append((page_number, line))
+
+        blocks = _segment_question_blocks(lines_with_page)
+        if not blocks and lines_with_page:
+            all_pages = sorted({item[0] for item in lines_with_page if item[0]}) or [1]
+            all_lines = [item[1] for item in lines_with_page]
+            blocks = [{"lines": all_lines, "pages": all_pages}]
+
+        questions: List[Dict[str, object]] = []
+        for block in blocks:
+            raw_lines: List[str] = block.get("lines", []) or []
+            question_text = "\n".join(raw_lines).strip()
+            if not question_text:
+                continue
+            pages_for_block = block.get("pages", []) or []
+            images: List[str] = []
+            for page_number in pages_for_block:
+                images.extend(image_lookup.get(page_number, []))
+            questions.append({"text": question_text, "images": images})
+        return questions
+
+    def _extract_pdf(self, file_path: Path) -> List[Dict[str, object]]:
+        self._ensure_pdf_support()
+        pages: List[Dict[str, object]] = []
+        with fitz.open(file_path) as pdf:
+            for idx, page in enumerate(pdf, start=1):
+                text = page.get_text("text")
+                images: List[str] = []
+                for image_info in page.get_images(full=True):
+                    xref = image_info[0]
+                    try:
+                        base = pdf.extract_image(xref)
+                        image_bytes = base.get("image")
+                        ext = base.get("ext", "png")
+                        if image_bytes:
+                            encoded = base64.b64encode(image_bytes).decode("ascii")
+                            images.append(f"data:image/{ext};base64,{encoded}")
+                    except ValueError:
+                        continue
+                pages.append({"page": idx, "text": text, "images": images})
+        return pages
+
+    def _extract_docx(self, file_path: Path) -> List[Dict[str, object]]:
+        self._ensure_docx_support()
+        if file_path.suffix.lower() == ".doc":
+            raise ValueError("DOC files are not supported. Please convert to DOCX and retry.")
+        document = Document(file_path)
+        text_lines: List[str] = [paragraph.text for paragraph in document.paragraphs]
+        images: List[str] = []
+        for rel in document.part.rels.values():
+            if "image" in rel.reltype:
+                blob = rel.target_part.blob
+                content_type = rel.target_part.content_type or "image/png"
+                encoded = base64.b64encode(blob).decode("ascii")
+                images.append(f"data:{content_type};base64,{encoded}")
+        text = "\n".join(text_lines)
+        return [{"page": 1, "text": text, "images": images}]
+
+    @staticmethod
+    def _ensure_pdf_support() -> None:
+        if fitz is None:
+            raise ValueError(
+                "PyMuPDF is required for PDF extraction. Install it via 'pip install pymupdf'."
+            )
+
+    @staticmethod
+    def _ensure_docx_support() -> None:
+        if Document is None:
+            raise ValueError(
+                "python-docx is required for DOCX extraction. Install it via 'pip install python-docx'."
+            )
+
+
 class QuestionAnalyzer:
     def __init__(self, refresh_dataset: bool = False) -> None:
         self.base_dir = Path(__file__).resolve().parents[1]
@@ -427,6 +568,31 @@ class QuestionAnalyzer:
         self.topic_classifier = TopicClassifier()
         self._rebuild_models()
         self.match_threshold = 0.90
+
+    def analyze_file(self, file_path: Path) -> List[ParsedQuestion]:
+        extractor = FileQuestionExtractor(self.topic_classifier)
+        question_blocks = extractor.extract(file_path)
+        results: List[ParsedQuestion] = []
+        for block in question_blocks:
+            text = block.get("text") or ""
+            if not text.strip():
+                continue
+            parsed = self.analyze(text)
+            parsed.images = block.get("images", []) or []
+            results.append(parsed)
+        return results
+
+    def analyze_file_content(self, file_bytes: bytes, filename: str = "upload") -> List[ParsedQuestion]:
+        suffix = Path(filename).suffix or ""
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                handle.write(file_bytes)
+                temp_path = Path(handle.name)
+            return self.analyze_file(temp_path)
+        finally:
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
 
     def analyze(self, raw_text: str) -> ParsedQuestion:
         parsed = parse_question(raw_text, classifier=self.topic_classifier)

@@ -28,6 +28,17 @@
     </div>
   </form>
 
+  <h2 style="margin-top:28px">Upload a paper (PDF or DOCX)</h2>
+  {% if file_error %}
+    <div style="color:crimson">{{ file_error }}</div>
+  {% endif %}
+  <form method="post" action="/analyze-file" enctype="multipart/form-data">
+    <input type="file" name="question_file" accept=".pdf,.docx,.doc" />
+    <div style="margin-top:8px">
+      <button type="submit">Extract and analyze</button>
+    </div>
+  </form>
+
   {% if result %}
     <h3>Result</h3>
     <div class="result">
@@ -47,6 +58,35 @@
       \n\nPrompt:\n{{ result.prompt }}
       {% if result.answer_options %}\n\nOptions:\n{% for opt in result.answer_options %}  {{ opt.label }}. {{ opt.text }}\n{% endfor %}{% endif %}
     </div>
+  {% endif %}
+
+  {% if file_results %}
+    <h3 style="margin-top:28px">Extracted questions ({{ file_results|length }})</h3>
+    {% for item in file_results %}
+      <div class="result" style="margin-top:12px">
+        Source: {{ item.source or 'Unknown' }}
+        \nYear: {{ item.year or 'Unknown' }}
+        \nQuestion #: {{ item.question_number or loop.index }}
+        \nPrimary topic: {{ item.topic_id }} - {{ item.topic_name }}
+        {% if item.topic_matches %}
+          \nTopic matches:
+          {% for match in item.topic_matches %}
+            \n  - {{ match.id }} - {{ match.name }} (confidence {{ '%.2f'|format(match.confidence) }})
+          {% endfor %}
+        {% endif %}
+        {% if item.correct_option %}\nDetected answer: {{ item.correct_option }}{% if item.correct_option_text %} ({{ item.correct_option_text }}){% endif %}{% endif %}
+        \n\nPrompt:\n{{ item.prompt }}
+        {% if item.answer_options %}\n\nOptions:\n{% for opt in item.answer_options %}  {{ opt.label }}. {{ opt.text }}\n{% endfor %}{% endif %}
+        {% if item.images %}
+          \n\nImages extracted:
+          <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:8px">
+            {% for img in item.images %}
+              <img src="{{ img }}" alt="Question image {{ loop.index }}" style="max-width:180px;max-height:180px;border:1px solid #ddd;padding:4px;background:#fff" />
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
   {% endif %}
 
   <p style="margin-top:18px;color:#666">Tip: include an answer in the pasted text using phrases like "Answer: C", "ans C", or just "C" on its own line.</p>

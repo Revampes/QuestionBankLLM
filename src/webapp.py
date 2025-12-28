@@ -30,6 +30,24 @@ def analyze():
     return _render_index(result=result)
 
 
+@app.route("/analyze-file", methods=["POST"])
+def analyze_file():
+    upload = request.files.get("question_file")
+    if not upload or not upload.filename:
+        return _render_index(file_error="Choose a file to upload.")
+
+    try:
+        file_bytes = upload.read()
+        if not file_bytes:
+            return _render_index(file_error="Uploaded file is empty.")
+        results = analyzer.analyze_file_content(file_bytes, upload.filename)
+        if not results:
+            return _render_index(file_error="No questions were detected in that file.")
+        return _render_index(file_results=results)
+    except ValueError as error:
+        return _render_index(file_error=str(error))
+
+
 @app.route("/topic-notes", methods=["POST"])
 def save_topic_note():
     payload = request.get_json(silent=True) or {}
